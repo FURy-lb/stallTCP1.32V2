@@ -1,69 +1,130 @@
 import { connect } from 'cloudflare:sockets';
 
 // =============================================================================
-// 🟣 用户配置区域 (优先级环境变量-代码硬编码)           下方内容可改生效于内置代码 【不使用环境变量的情况下】
+// 🟣 1. 用户配置区域 (默认值/硬编码)
+//    优先级说明: 环境变量 > D1数据库 > KV > 下面的硬编码常量
 // =============================================================================
-const UUID = "06b65903-406d-4a41-8463-6fd5c0ee7798"; // 修改可用的uuid
-const WEB_PASSWORD = "2B6Hh4JDi9gSZNQ";  //自己要修改自定义的登录密码
-const SUB_PASSWORD = "a123.";  // 自己要修改自定义的订阅密码
-const DEFAULT_PROXY_IP = "ProxyIP.US.CMLiussss.net";  //可修改自定义的proxyip
-const DEFAULT_SUB_DOMAIN = "sub.cmliussss.net";  //可修改自定义的sub订阅器
-const TG_GROUP_URL = "https://t.me/zyssadmin";   //可修改自定义内容
-const TG_CHANNEL_URL = "https://t.me/cloudflareorg";  //可此修改自定义内容
-const PROXY_CHECK_URL = "https://kaic.hidns.co/";  //可修改自定义的proxyip检测站
-const DEFAULT_CONVERTER = "https://subapi.cmliussss.net";  //可修改自定义后端api
-const CLASH_CONFIG = "https://raw.githubusercontent.com/cmliu/ACL4SSR/main/Clash/config/ACL4SSR_Online_Full_MultiMode.ini"; //可修改自定义订阅配置转换ini
-const SINGBOX_CONFIG_V12 = "https://raw.githubusercontent.com/sinspired/sub-store-template/main/1.12.x/sing-box.json"; //禁止修改 优先使用1.12 后用1.11
-const SINGBOX_CONFIG_V11 = "https://raw.githubusercontent.com/sinspired/sub-store-template/main/1.11.x/sing-box.json"; //禁止修改
-const TG_BOT_TOKEN = ""; //你的机器人token
-const TG_CHAT_ID = "";  //你的TG ID
-const ADMIN_IP = "";  //你的白名单IP 保护你不会被自己域名拉黑 (支持多IP，使用英文逗号分隔)
+const UUID = "06b65903-406d-4a41-8463-6fd5c0ee7798"; 
+const WEB_PASSWORD = "你的登录密码"; 
+const SUB_PASSWORD = "你的订阅密码"; 
+const DEFAULT_PROXY_IP = "ProxyIP.US.CMLiussss.net"; 
+const DEFAULT_SUB_DOMAIN = "sub.cmliussss.net"; 
+const TG_GROUP_URL = "https://t.me/zyssadmin"; 
+const TG_CHANNEL_URL = "https://t.me/cloudflareorg"; 
+const PROXY_CHECK_URL = "https://kaic.hidns.co/"; 
+const DEFAULT_CONVERTER = "https://subapi.cmliussss.net"; 
+const CLASH_CONFIG = "https://raw.githubusercontent.com/cmliu/ACL4SSR/main/Clash/config/ACL4SSR_Online_Full_MultiMode.ini";
+const SINGBOX_CONFIG_V12 = "https://raw.githubusercontent.com/sinspired/sub-store-template/main/1.12.x/sing-box.json";
+const SINGBOX_CONFIG_V11 = "https://raw.githubusercontent.com/sinspired/sub-store-template/main/1.11.x/sing-box.json";
+const TG_BOT_TOKEN = ""; 
+const TG_CHAT_ID = ""; 
+const ADMIN_IP = ""; // 预设白名单，支持逗号分隔
 
 // =============================================================================
-// ⚡️ 核心逻辑区 (Core Logic)
+// ⚡️ 核心工具函数区
 // =============================================================================
 const MAX_PENDING=2097152,KEEPALIVE=15000,STALL_TO=8000,MAX_STALL=12,MAX_RECONN=24;
 const buildUUID=(a,i)=>[...a.slice(i,i+16)].map(n=>n.toString(16).padStart(2,'0')).join('').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,'$1-$2-$3-$4-$5');
 const extractAddr=b=>{const o=18+b[17]+1,p=(b[o]<<8)|b[o+1],t=b[o+2];let l,h,O=o+3;switch(t){case 1:l=4;h=b.slice(O,O+l).join('.');break;case 2:l=b[O++];h=new TextDecoder().decode(b.slice(O,O+l));break;case 3:l=16;h=`[${[...Array(8)].map((_,i)=>((b[O+i*2]<<8)|b[O+i*2+1]).toString(16)).join(':')}]`;break;default:throw new Error('Addr type error');}return{host:h,port:p,payload:b.slice(O+l)}};
-
-// 协议类型混淆
 const PT_TYPE = 'v'+'l'+'e'+'s'+'s';
 
-// =============================================================================
-// 🗄️ 数据库与存储助手 (D1 + R2)
-// =============================================================================
+// -----------------------------------------------------------------------------
+// 🗄️ 存储与配置读取 (Env > D1 > KV > Fallback)
+// -----------------------------------------------------------------------------
 async function getSafeEnv(env, key, fallback) {
+    // 1. 优先环境变量
     if (env[key] && env[key].trim() !== "") return env[key];
+    
+    // 2. 其次 D1 数据库
+    // 🟢 修复：严格判断非空字符串，防止数据库里的空值覆盖了硬编码
     if (env.DB) {
         try {
             const { results } = await env.DB.prepare("SELECT value FROM config WHERE key = ?").bind(key).all();
             if (results && results.length > 0 && results[0].value && results[0].value.trim() !== "") {
                 return results[0].value;
             }
-        } catch(e) { /* D1读取失败忽略 */ }
-    }
-    if (env.LH) {
-        try {
-            const kvVal = await env.LH.get(key);
-            if (kvVal && kvVal.trim() !== "") return kvVal;
         } catch(e) {}
     }
+    
+    // 3. 再次 KV
+    // 🟢 修复：同上，排除空字符串
+    if (env.LH) {
+        try { 
+            const kvVal = await env.LH.get(key); 
+            if (kvVal && kvVal.trim() !== "") return kvVal; 
+        } catch(e) {}
+    }
+    
+    // 4. 最后硬编码 fallback
     return fallback;
 }
 
-// 日志记录
-async function logAccess(env, ip, region, action) {
-    const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+// 🛡️ 白名单检查
+async function checkWhitelist(env, ip) {
+    const envWL = await getSafeEnv(env, 'WL_IP', ADMIN_IP);
+    if (envWL && envWL.includes(ip)) return true;
     if (env.DB) {
         try {
-            await env.DB.prepare("INSERT INTO logs (time, ip, region, action) VALUES (?, ?, ?, ?)")
-                .bind(time, ip, region, action).run();
-            env.DB.prepare("DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY id DESC LIMIT 1000)").run().catch(()=>{});
-        } catch (e) {}
+            const { results } = await env.DB.prepare("SELECT 1 FROM whitelist WHERE ip = ?").bind(ip).all();
+            if (results && results.length > 0) return true;
+        } catch(e) {}
     }
+    if (env.LH) {
+        try { if (await env.LH.get(`WL_${ip}`)) return true; } catch(e) {}
+    }
+    return false;
 }
 
-// 每日请求计数
+// 🛡️ 添加白名单
+async function addWhitelist(env, ip) {
+    const time = Date.now();
+    if (env.DB) { try { await env.DB.prepare("INSERT OR IGNORE INTO whitelist (ip, created_at) VALUES (?, ?)").bind(ip, time).run(); } catch(e) {} }
+    if (env.LH) { try { await env.LH.put(`WL_${ip}`, "1"); } catch(e) {} }
+}
+
+// 🛡️ 删除白名单
+async function delWhitelist(env, ip) {
+    if (env.DB) { try { await env.DB.prepare("DELETE FROM whitelist WHERE ip = ?").bind(ip).run(); } catch(e) {} }
+    if (env.LH) { try { await env.LH.delete(`WL_${ip}`); } catch(e) {} }
+}
+
+// 🛡️ 获取所有白名单
+async function getAllWhitelist(env) {
+    let systemSet = new Set();
+    let manualSet = new Set();
+    if(typeof ADMIN_IP !== 'undefined' && ADMIN_IP) ADMIN_IP.split(',').map(s=>s.trim()).filter(s=>s).forEach(i => systemSet.add(i));
+    const envWL = await getSafeEnv(env, 'WL_IP', "");
+    if(envWL) envWL.split(',').map(s=>s.trim()).filter(s=>s).forEach(i => systemSet.add(i));
+    if (env.DB) {
+        try {
+            const { results } = await env.DB.prepare("SELECT ip FROM whitelist ORDER BY created_at DESC").all();
+            results.forEach(row => manualSet.add(row.ip));
+        } catch(e) {}
+    }
+    if (env.LH) {
+        try {
+            const list = await env.LH.list({ prefix: "WL_" });
+            list.keys.forEach(k => manualSet.add(k.name.replace("WL_", "")));
+        } catch(e) {}
+    }
+    let result = [];
+    systemSet.forEach(ip => result.push({ ip: ip, type: 'system' }));
+    manualSet.forEach(ip => { if (!systemSet.has(ip)) { result.push({ ip: ip, type: 'manual' }); } });
+    return result;
+}
+
+// -----------------------------------------------------------------------------
+// 📊 日志与统计
+// -----------------------------------------------------------------------------
+async function logAccess(env, ip, region, action) {
+    if (!env.DB) return;
+    const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    try {
+        await env.DB.prepare("INSERT INTO logs (time, ip, region, action) VALUES (?, ?, ?, ?)").bind(time, ip, region, action).run();
+        await env.DB.prepare("DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY id DESC LIMIT 1000)").run();
+    } catch (e) {}
+}
+
 async function incrementDailyStats(env) {
     if (!env.DB) return "0";
     const dateStr = new Date().toISOString().split('T')[0];
@@ -74,87 +135,11 @@ async function incrementDailyStats(env) {
     } catch(e) { return "0"; }
 }
 
-// 🛡️ 洪水攻击检测
-async function checkFlood(env, ip) {
-    if (!env.DB) return false;
-    const now = Math.floor(Date.now() / 1000);
-    try {
-        await env.DB.prepare("DELETE FROM flood WHERE updated_at < ?").bind(now - 60).run();
-        await env.DB.prepare(`INSERT INTO flood (ip, count, updated_at) VALUES (?, 1, ?) ON CONFLICT(ip) DO UPDATE SET count = count + 1, updated_at = ?`).bind(ip, now, now).run();
-        const { results } = await env.DB.prepare("SELECT count FROM flood WHERE ip = ?").bind(ip).all();
-        return (results[0]?.count || 0) >= 5;
-    } catch(e) { return false; }
-}
-
-// 🚫 封禁状态检查
-async function checkBan(env, ip) {
-    if (env.DB) {
-        try {
-            const { results } = await env.DB.prepare("SELECT is_banned FROM bans WHERE ip = ?").bind(ip).all();
-            return results && results.length > 0 && results[0].is_banned === 1;
-        } catch(e) { return false; }
-    } else if (env.LH) {
-        try { return (await env.LH.get(`BAN_${ip}`)) === "1";
-        } catch(e) { return false; }
-    }
-    return false;
-}
-
-// 🚫 执行封禁
-async function banIP(env, ip) {
-    if (env.DB) {
-        try { await env.DB.prepare("INSERT OR REPLACE INTO bans (ip, is_banned) VALUES (?, 1)").bind(ip).run();
-        } catch(e) {}
-    } else if (env.LH) {
-        try { await env.LH.put(`BAN_${ip}`, "1");
-        } catch(e) {}
-    }
-}
-
-// 🔓 解除封禁
-async function unbanIP(env, ip) {
-    if (env.DB) {
-        try { await env.DB.prepare("DELETE FROM bans WHERE ip = ?").bind(ip).run();
-        } catch(e) {}
-    } else if (env.LH) {
-        try { await env.LH.delete(`BAN_${ip}`);
-        } catch(e) {}
-    }
-}
-
-// 📋 获取黑名单列表
-async function getBanList(env) {
-    if (env.DB) {
-        try {
-            const { results } = await env.DB.prepare("SELECT ip FROM bans").all();
-            return results.map(row => row.ip);
-        } catch(e) { return []; }
-    } else if (env.LH) {
-        try {
-            const list = await env.LH.list({ prefix: "BAN_" });
-            return list.keys.map(k => k.name.replace("BAN_", ""));
-        } catch(e) { return []; }
-    }
-    return [];
-}
-
 async function parseIP(p){
-    p=p.toLowerCase();
-    let a=p,o=443;
-    if(p.includes('.tp')){
-        const m=p.match(/\.tp(\d+)/);
-        if(m)o=parseInt(m[1],10);
-        return[a,o]
-    }
-    if(p.includes(']:')){
-        const s=p.split(']:');
-        a=s[0]+']';
-        o=parseInt(s[1],10)||o
-    } else if(p.includes(':')&&!p.startsWith('[')){
-        const i=p.lastIndexOf(':');
-        a=p.slice(0,i);
-        o=parseInt(p.slice(i+1),10)||o
-    }
+    p=p.toLowerCase(); let a=p,o=443;
+    if(p.includes('.tp')){ const m=p.match(/\.tp(\d+)/); if(m)o=parseInt(m[1],10); return[a,o] }
+    if(p.includes(']:')){ const s=p.split(']:'); a=s[0]+']'; o=parseInt(s[1],10)||o } 
+    else if(p.includes(':')&&!p.startsWith('[')){ const i=p.lastIndexOf(':'); a=p.slice(0,i); o=parseInt(p.slice(i+1),10)||o }
     return[a,o]
 }
 
@@ -168,16 +153,13 @@ async function getDynamicUUID(key, refresh = 86400) {
     return [...b.slice(0, 16)].map(n => n.toString(16).padStart(2, '0')).join('').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
 }
 
-// ☁️ Cloudflare 官方用量 (GraphQL)
 async function getCloudflareUsage(env) {
     const Email = await getSafeEnv(env, 'CF_EMAIL', "");
     const GlobalAPIKey = await getSafeEnv(env, 'CF_KEY', "");
     const AccountID = await getSafeEnv(env, 'CF_ID', "");
     const APIToken = await getSafeEnv(env, 'CF_TOKEN', "");
-
     if (!AccountID && (!Email || !GlobalAPIKey)) return { success: false, msg: "未配置 CF 凭证" };
-    const API = "https://api.cloudflare.com/client/v4";
-    const cfg = { "Content-Type": "application/json" };
+    const API = "https://api.cloudflare.com/client/v4"; const cfg = { "Content-Type": "application/json" };
     try {
         let finalAccountID = AccountID;
         if (!finalAccountID) {
@@ -187,66 +169,30 @@ async function getCloudflareUsage(env) {
             const idx = d.result?.findIndex(a => a.name?.toLowerCase().startsWith(Email.toLowerCase()));
             finalAccountID = d.result?.[idx >= 0 ? idx : 0]?.id;
         }
-        
         if(!finalAccountID) throw new Error("无法获取 Account ID");
         const now = new Date(); now.setUTCHours(0, 0, 0, 0);
-        const hdr = APIToken ?
-            { ...cfg, "Authorization": `Bearer ${APIToken}` } : { ...cfg, "X-AUTH-EMAIL": Email, "X-AUTH-KEY": GlobalAPIKey };
-        const res = await fetch(`${API}/graphql`, {
-            method: "POST",
-            headers: hdr,
-            body: JSON.stringify({
-                query: `query getBillingMetrics($AccountID: String!, $filter: AccountWorkersInvocationsAdaptiveFilter_InputObject) {
-                    viewer { accounts(filter: {accountTag: $AccountID}) {
-                        pagesFunctionsInvocationsAdaptiveGroups(limit: 1000, filter: $filter) { sum { requests } }
-                        workersInvocationsAdaptive(limit: 10000, filter: $filter) { sum { requests } }
-                    } } }`,
-                variables: { AccountID: finalAccountID, filter: 
-                    { datetime_geq: now.toISOString(), datetime_leq: new Date().toISOString() } }
-            })
-        });
+        const hdr = APIToken ? { ...cfg, "Authorization": `Bearer ${APIToken}` } : { ...cfg, "X-AUTH-EMAIL": Email, "X-AUTH-KEY": GlobalAPIKey };
+        const res = await fetch(`${API}/graphql`, { method: "POST", headers: hdr, body: JSON.stringify({ query: `query getBillingMetrics($AccountID: String!, $filter: AccountWorkersInvocationsAdaptiveFilter_InputObject) { viewer { accounts(filter: {accountTag: $AccountID}) { pagesFunctionsInvocationsAdaptiveGroups(limit: 1000, filter: $filter) { sum { requests } } workersInvocationsAdaptive(limit: 10000, filter: $filter) { sum { requests } } } } }`, variables: { AccountID: finalAccountID, filter: { datetime_geq: now.toISOString(), datetime_leq: new Date().toISOString() } } }) });
         if (!res.ok) throw new Error(`查询失败: ${res.status}`);
         const result = await res.json();
         const acc = result?.data?.viewer?.accounts?.[0];
         const pages = acc?.pagesFunctionsInvocationsAdaptiveGroups?.reduce((t, i) => t + (i?.sum?.requests || 0), 0) || 0;
         const workers = acc?.workersInvocationsAdaptive?.reduce((t, i) => t + (i?.sum?.requests || 0), 0) || 0;
         return { success: true, total: pages + workers, pages, workers };
-    } catch (e) { return { success: false, msg: e.message };
-    }
+    } catch (e) { return { success: false, msg: e.message }; }
 }
 
-// 🤖 发送 Telegram 消息
 async function sendTgMsg(ctx, env, title, r, detail = "", isAdmin = false) {
   const token = await getSafeEnv(env, 'TG_BOT_TOKEN', TG_BOT_TOKEN);
   const chat_id = await getSafeEnv(env, 'TG_CHAT_ID', TG_CHAT_ID);
   if (!token || !chat_id) return;
-
   let icon = "📡";
-  if (title.includes("封禁")) icon = "🚫";
-  else if (title.includes("登录")) icon = "🔐";
-  else if (title.includes("订阅")) icon = "🔄";
-  else if (title.includes("检测")) icon = "🔍";
-  else if (title.includes("点击")) icon = "🌟";
-  else if (title.includes("配置")) icon = "⚙️";
-
-  const roleTag = isAdmin ?
-      "🛡️ <b>管理员操作</b>" : "👤 <b>陌生访问</b>";
-
+  if (title.includes("登录")) icon = "🔐"; else if (title.includes("订阅")) icon = "🔄"; else if (title.includes("检测")) icon = "🔍"; else if (title.includes("点击")) icon = "🌟";
+  const roleTag = isAdmin ? "🛡️ <b>管理员操作</b>" : "👤 <b>用户访问</b>";
   try {
-    const url = new URL(r.url);
-    const ip = r.headers.get('cf-connecting-ip') ||
-      'Unknown';
-    const ua = r.headers.get('User-Agent') || 'Unknown';
-    const city = r.cf?.city || 'Unknown';
-    const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    const url = new URL(r.url); const ip = r.headers.get('cf-connecting-ip') || 'Unknown'; const ua = r.headers.get('User-Agent') || 'Unknown'; const city = r.cf?.city || 'Unknown'; const time = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
     const safe = (str) => (str || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const text = `<b>${icon} ${safe(title)}</b>\n${roleTag}\n\n` + 
-                 `<b>🕒 时间:</b> <code>${time}</code>\n` + 
-                 `<b>🌍 IP:</b> <code>${safe(ip)} (${safe(city)})</code>\n` + 
-                 `<b>🔗 域名:</b> <code>${safe(url.hostname)}</code>\n` + 
-                 `<b>🛣️ 路径:</b> <code>${safe(url.pathname)}</code>\n` + 
-                `<b>📱 客户端:</b> <code>${safe(ua)}</code>\n` + 
-                 (detail ? `<b>ℹ️ 详情:</b> ${safe(detail)}` : "");
+    const text = `<b>${icon} ${safe(title)}</b>\n${roleTag}\n\n` + `<b>🕒 时间:</b> <code>${time}</code>\n` + `<b>🌍 IP:</b> <code>${safe(ip)} (${safe(city)})</code>\n` + `<b>🔗 域名:</b> <code>${safe(url.hostname)}</code>\n` + `<b>🛣️ 路径:</b> <code>${safe(url.pathname)}</code>\n` + `<b>📱 客户端:</b> <code>${safe(ua)}</code>\n` + (detail ? `<b>ℹ️ 详情:</b> ${safe(detail)}` : "");
     const params = { chat_id: chat_id, text: text, parse_mode: 'HTML', disable_web_page_preview: true };
     const p = fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) }).catch(() => {});
     if(ctx && ctx.waitUntil) ctx.waitUntil(p);
@@ -254,60 +200,16 @@ async function sendTgMsg(ctx, env, title, r, detail = "", isAdmin = false) {
 }
 
 const handle = (ws, pc, uuid) => {
-  const pool = new Pool();
-  let s, w, r, inf, fst = true, rx = 0, stl = 0, cnt = 0, lact = Date.now(), con = false, rd = false, wt = false, tm = {}, pd = [], pb = 0, scr = 1.0, lck = Date.now(), lrx = 0, md = 'buf', asz = 0, tp = [], st = { t: 0, c: 0, ts: Date.now() };
-  const upd = sz => {
-    st.t += sz; st.c++;
-    asz = asz * 0.9 + sz * 0.1; const n = Date.now();
-    if (n - st.ts > 1000) { const rt = st.t; tp.push(rt); if (tp.length > 5) tp.shift(); st.t = 0;
-    st.ts = n; const av = tp.reduce((a, b) => a + b, 0) / tp.length;
-    if (st.c >= 20) { if (av > 2e7 && asz > 16384) md = 'dir';
-    else if (av < 1e7 || asz < 8192) md = 'buf'; else md = 'adp' } }
-  };
-  const rdL = async () => {
-    if (rd) return; rd = true;
-    let b = [], bz = 0, tm = null;
-    const fl = () => { if (!bz) return;
-    const m = new Uint8Array(bz); let p = 0; for (const x of b) { m.set(x, p);
-    p += x.length } if (ws.readyState === 1) ws.send(m); b = []; bz = 0; if (tm) clearTimeout(tm);
-    tm = null };
-    try { while (1) { if (pb > MAX_PENDING) { await new Promise(r => setTimeout(r, 100));
-    continue } const { done, value: v } = await r.read(); if (v?.length) { rx += v.length; lact = Date.now();
-    stl = 0; upd(v.length); const n = Date.now(); if (n - lck > 5000) { const el = n - lck, by = rx - lrx, r = by / el;
-    if (r > 500) scr = Math.min(1, scr + 0.05);
-    else if (r < 50) scr = Math.max(0.1, scr - 0.05); lck = n;
-    lrx = rx } if (md === 'buf') { if (v.length < 32768) { b.push(v); bz += v.length;
-    if (bz >= 131072) fl(); else if (!tm) tm = setTimeout(fl, asz > 16384 ? 5 : 20) } else { fl();
-    if (ws.readyState === 1) ws.send(v) } } else { fl();
-    if (ws.readyState === 1) ws.send(v) } } if (done) { fl(); rd = false; rcn();
-    break } } } catch { fl(); rd = false; rcn() }
-  };
-  const wtL = async () => { if (wt) return; wt = true;
-  try { while (wt) { if (!w) { await new Promise(r => setTimeout(r, 100));
-  continue } if (!pd.length) { await new Promise(r => setTimeout(r, 20)); continue } const b = pd.shift(); await w.write(b);
-  pb -= b.length; pool.free(b) } } catch { wt = false } };
-  const est = async () => { try { s = await cn(); w = s.writable.getWriter(); r = s.readable.getReader();
-  con = false; cnt = 0; scr = Math.min(1, scr + 0.15); lact = Date.now(); rdL();
-  wtL() } catch { con = false; scr = Math.max(0.1, scr - 0.2); rcn() } };
-  const cn = async () => { const m = ['direct']; if (pc) m.push('proxy'); let err;
-  for (const x of m) { try { const o = (x === 'direct') ?
-  { hostname: inf.host, port: inf.port } : { hostname: pc.address, port: pc.port }; const sk = connect(o); await sk.opened;
-  return sk } catch (e) { err = e } } throw err };
-  const rcn = async () => { if (!inf || ws.readyState !== 1) { cln(); ws.close(1011);
-  return } if (cnt >= MAX_RECONN) { cln(); ws.close(1011); return } if (con) return; cnt++;
-  let d = Math.min(50 * Math.pow(1.5, cnt - 1), 3000) * (1.5 - scr * 0.5); d = Math.max(50, Math.floor(d));
-  try { csk(); if (pb > MAX_PENDING * 2) while (pb > MAX_PENDING && pd.length > 5) { const k = pd.shift();
-  pb -= k.length; pool.free(k) } await new Promise(r => setTimeout(r, d)); con = true; s = await cn();
-  w = s.writable.getWriter(); r = s.readable.getReader(); con = false; cnt = 0; scr = Math.min(1, scr + 0.15);
-  stl = 0; lact = Date.now(); rdL(); wtL() } catch { con = false; scr = Math.max(0.1, scr - 0.2);
-  if (cnt < MAX_RECONN && ws.readyState === 1) setTimeout(rcn, 500); else { cln(); ws.close(1011) } } };
-  const stT = () => { tm.ka = setInterval(async () => { if (!con && w && Date.now() - lact > KEEPALIVE) try { await w.write(new Uint8Array(0)); lact = Date.now() } catch { rcn() } }, KEEPALIVE / 3);
-  tm.hc = setInterval(() => { if (!con && st.t > 0 && Date.now() - lact > STALL_TO) { stl++; if (stl >= MAX_STALL) { if (cnt < MAX_RECONN) { stl = 0; rcn() } else { cln(); ws.close(1011) } } } }, STALL_TO / 2) };
-  const csk = () => { rd = false; wt = false; try { w?.releaseLock(); r?.releaseLock();
-  s?.close() } catch { } }; 
-  const cln = () => { Object.values(tm).forEach(clearInterval); csk(); while (pd.length) pool.free(pd.shift()); pb = 0;
-  st = { t: 0, c: 0, ts: Date.now() }; md = 'buf'; asz = 0; tp = [];
-  pool.reset() };
+  const pool = new Pool(); let s, w, r, inf, fst = true, rx = 0, stl = 0, cnt = 0, lact = Date.now(), con = false, rd = false, wt = false, tm = {}, pd = [], pb = 0, scr = 1.0, lck = Date.now(), lrx = 0, md = 'buf', asz = 0, tp = [], st = { t: 0, c: 0, ts: Date.now() };
+  const upd = sz => { st.t += sz; st.c++; asz = asz * 0.9 + sz * 0.1; const n = Date.now(); if (n - st.ts > 1000) { const rt = st.t; tp.push(rt); if (tp.length > 5) tp.shift(); st.t = 0; st.ts = n; const av = tp.reduce((a, b) => a + b, 0) / tp.length; if (st.c >= 20) { if (av > 2e7 && asz > 16384) md = 'dir'; else if (av < 1e7 || asz < 8192) md = 'buf'; else md = 'adp' } } };
+  const rdL = async () => { if (rd) return; rd = true; let b = [], bz = 0, tm = null; const fl = () => { if (!bz) return; const m = new Uint8Array(bz); let p = 0; for (const x of b) { m.set(x, p); p += x.length } if (ws.readyState === 1) ws.send(m); b = []; bz = 0; if (tm) clearTimeout(tm); tm = null }; try { while (1) { if (pb > MAX_PENDING) { await new Promise(r => setTimeout(r, 100)); continue } const { done, value: v } = await r.read(); if (v?.length) { rx += v.length; lact = Date.now(); stl = 0; upd(v.length); const n = Date.now(); if (n - lck > 5000) { const el = n - lck, by = rx - lrx, r = by / el; if (r > 500) scr = Math.min(1, scr + 0.05); else if (r < 50) scr = Math.max(0.1, scr - 0.05); lck = n; lrx = rx } if (md === 'buf') { if (v.length < 32768) { b.push(v); bz += v.length; if (bz >= 131072) fl(); else if (!tm) tm = setTimeout(fl, asz > 16384 ? 5 : 20) } else { fl(); if (ws.readyState === 1) ws.send(v) } } else { fl(); if (ws.readyState === 1) ws.send(v) } } if (done) { fl(); rd = false; rcn(); break } } } catch { fl(); rd = false; rcn() } };
+  const wtL = async () => { if (wt) return; wt = true; try { while (wt) { if (!w) { await new Promise(r => setTimeout(r, 100)); continue } if (!pd.length) { await new Promise(r => setTimeout(r, 20)); continue } const b = pd.shift(); await w.write(b); pb -= b.length; pool.free(b) } } catch { wt = false } };
+  const est = async () => { try { s = await cn(); w = s.writable.getWriter(); r = s.readable.getReader(); con = false; cnt = 0; scr = Math.min(1, scr + 0.15); lact = Date.now(); rdL(); wtL() } catch { con = false; scr = Math.max(0.1, scr - 0.2); rcn() } };
+  const cn = async () => { const m = ['direct']; if (pc) m.push('proxy'); let err; for (const x of m) { try { const o = (x === 'direct') ? { hostname: inf.host, port: inf.port } : { hostname: pc.address, port: pc.port }; const sk = connect(o); await sk.opened; return sk } catch (e) { err = e } } throw err };
+  const rcn = async () => { if (!inf || ws.readyState !== 1) { cln(); ws.close(1011); return } if (cnt >= MAX_RECONN) { cln(); ws.close(1011); return } if (con) return; cnt++; let d = Math.min(50 * Math.pow(1.5, cnt - 1), 3000) * (1.5 - scr * 0.5); d = Math.max(50, Math.floor(d)); try { csk(); if (pb > MAX_PENDING * 2) while (pb > MAX_PENDING && pd.length > 5) { const k = pd.shift(); pb -= k.length; pool.free(k) } await new Promise(r => setTimeout(r, d)); con = true; s = await cn(); w = s.writable.getWriter(); r = s.readable.getReader(); con = false; cnt = 0; scr = Math.min(1, scr + 0.15); stl = 0; lact = Date.now(); rdL(); wtL() } catch { con = false; scr = Math.max(0.1, scr - 0.2); if (cnt < MAX_RECONN && ws.readyState === 1) setTimeout(rcn, 500); else { cln(); ws.close(1011) } } };
+  const stT = () => { tm.ka = setInterval(async () => { if (!con && w && Date.now() - lact > KEEPALIVE) try { await w.write(new Uint8Array(0)); lact = Date.now() } catch { rcn() } }, KEEPALIVE / 3); tm.hc = setInterval(() => { if (!con && st.t > 0 && Date.now() - lact > STALL_TO) { stl++; if (stl >= MAX_STALL) { if (cnt < MAX_RECONN) { stl = 0; rcn() } else { cln(); ws.close(1011) } } } }, STALL_TO / 2) };
+  const csk = () => { rd = false; wt = false; try { w?.releaseLock(); r?.releaseLock(); s?.close() } catch { } }; 
+  const cln = () => { Object.values(tm).forEach(clearInterval); csk(); while (pd.length) pool.free(pd.shift()); pb = 0; st = { t: 0, c: 0, ts: Date.now() }; md = 'buf'; asz = 0; tp = []; pool.reset() };
   ws.addEventListener('message', async e => { try { if (fst) { fst = false; const b = new Uint8Array(e.data); if (buildUUID(b, 1).toLowerCase() !== uuid.toLowerCase()) throw 0; ws.send(new Uint8Array([0, 0])); const { host, port, payload } = extractAddr(b); inf = { host, port }; con = true; if (payload.length) { const z = pool.alloc(payload.length); z.set(payload); pd.push(z); pb += z.length } stT(); est() } else { lact = Date.now(); if (pb > MAX_PENDING * 2) return; const z = pool.alloc(e.data.byteLength); z.set(new Uint8Array(e.data)); pd.push(z); pb += z.length } } catch { cln(); ws.close(1006) } });
   ws.addEventListener('close', cln); ws.addEventListener('error', cln)
 };
@@ -320,43 +222,18 @@ function loginPage(tgGroup, tgChannel) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Worker Login</title>
     <style>
-        body { background: linear-gradient(135deg, #0f4c75 0%, #3282b8 50%, #bbe1fa 100%);
-        color: white; font-family: 'Segoe UI', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;
-        }
-        .glass-box { background: rgba(16, 32, 60, 0.6); backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.1); padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
-        text-align: center; width: 320px; }
-        h2 { margin-top: 0; margin-bottom: 20px; font-weight: 600;
-        letter-spacing: 1px; font-size: 1.4rem; display: flex; align-items: center; justify-content: center; gap: 8px;
-        }
-        h2::before { content: '🔒'; font-size: 1.2rem;
-        }
-        input { width: 100%; padding: 12px; margin-bottom: 15px; border-radius: 6px;
-        border: 1px solid rgba(255, 255, 255, 0.2); background: rgba(30, 45, 70, 0.6); color: white; box-sizing: border-box; text-align: center; font-size: 0.95rem;
-        outline: none; transition: 0.3s; }
-        input:focus { border-color: #3282b8;
-        background: rgba(30, 45, 70, 0.9); }
-        input::placeholder { color: #8ba0b3;
-        }
-        .btn-group { display: flex; flex-direction: column; gap: 10px;
-        }
-        button { width: 100%; padding: 12px; border-radius: 6px; border: none; cursor: pointer;
-        font-size: 0.95rem; transition: 0.2s; font-weight: 600; }
-        .btn-primary { background: linear-gradient(90deg, #3282b8, #0f4c75);
-        color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.2); }
-        .btn-primary:hover { opacity: 0.9;
-        transform: translateY(-1px); }
-        .btn-unlock { background: linear-gradient(90deg, #a29bfe, #6c5ce7); color: white; margin-top: 5px;
-        }
-        .btn-unlock:hover { opacity: 0.9; transform: translateY(-1px);
-        }
-        .social-links { margin-top: 25px; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap;
-        }
-        .pill { background: rgba(0, 0, 0, 0.3); padding: 6px 12px; border-radius: 20px;
-        color: #dcdde1; text-decoration: none; font-size: 0.8rem; display: flex; align-items: center; gap: 5px; transition: 0.2s;
-        border: 1px solid rgba(255, 255, 255, 0.1); }
-        .pill:hover { background: rgba(255, 255, 255, 0.1);
-        border-color: #3282b8; color: white; }
+        body { background: linear-gradient(135deg, #0f4c75 0%, #3282b8 50%, #bbe1fa 100%); color: white; font-family: 'Segoe UI', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .glass-box { background: rgba(16, 32, 60, 0.6); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3); text-align: center; width: 320px; }
+        h2 { margin-top: 0; margin-bottom: 20px; font-weight: 600; font-size: 1.4rem; display: flex; align-items: center; justify-content: center; gap: 8px; } h2::before { content: '🔒'; font-size: 1.2rem; }
+        input { width: 100%; padding: 12px; margin-bottom: 15px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.2); background: rgba(30, 45, 70, 0.6); color: white; box-sizing: border-box; text-align: center; font-size: 0.95rem; outline: none; transition: 0.3s; }
+        input:focus { border-color: #3282b8; background: rgba(30, 45, 70, 0.9); } input::placeholder { color: #8ba0b3; }
+        .btn-group { display: flex; flex-direction: column; gap: 10px; }
+        button { width: 100%; padding: 12px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.95rem; transition: 0.2s; font-weight: 600; }
+        .btn-primary { background: linear-gradient(90deg, #3282b8, #0f4c75); color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.2); } .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn-unlock { background: linear-gradient(90deg, #a29bfe, #6c5ce7); color: white; margin-top: 5px; } .btn-unlock:hover { opacity: 0.9; transform: translateY(-1px); }
+        .social-links { margin-top: 25px; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+        .pill { background: rgba(0, 0, 0, 0.3); padding: 6px 12px; border-radius: 20px; color: #dcdde1; text-decoration: none; font-size: 0.8rem; display: flex; align-items: center; gap: 5px; transition: 0.2s; border: 1px solid rgba(255, 255, 255, 0.1); }
+        .pill:hover { background: rgba(255, 255, 255, 0.1); border-color: #3282b8; color: white; }
     </style>
 </head>
 <body>
@@ -393,13 +270,18 @@ function loginPage(tgGroup, tgChannel) {
 </html>`;
 }
 
-function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clientIP, hasAuth, tgState, cfState, add, addApi, addCsv) {
+function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clientIP, hasAuth, tgState, cfState, add, addApi, addCsv, tgToken, tgId, cfId, cfToken, cfMail, cfKey, sysParams) {
     const defaultSubLink = `https://${host}/${subpass}`;
     const pathParam = proxyip ? "/proxyip=" + proxyip : "/";
     const longLink = `https://${subdomain}/sub?uuid=${uuid}&encryption=none&security=tls&sni=${host}&alpn=h3&fp=random&allowInsecure=1&type=ws&host=${host}&path=${encodeURIComponent(pathParam)}`;
-    
-    // 安全转义函数
     const safeVal = (str) => (str || '').replace(/"/g, '&quot;');
+
+    // 辅助函数：判断是否是系统内置
+    const getStatusLabel = (val, sysVal) => {
+        if (!val) return "";
+        if (val === sysVal) return `<span class="source-tag sys">🔒 系统预设 (不可删除)</span>`;
+        return `<span class="source-tag man">💾 后台配置 (可清除)</span>`;
+    };
 
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -408,150 +290,74 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Worker 控制台</title>
     <style>
-        body { display: none;
-        } 
-        :root { --bg: #121418; --card: #1e222a; --text: #e0e0e0; --border: #2a2f38;
-        --accent: #3498db; --green: #2ecc71; --red: #e74c3c; --input-bg: #15181e; --modal-bg: #1e222a;
-        }
-        body.light { --bg: #f0f2f5; --card: #ffffff; --text: #333333; --border: #e0e0e0; --accent: #3498db;
-        --green: #27ae60; --red: #c0392b; --input-bg: #f9f9f9; --modal-bg: #ffffff; }
-        body.loaded { display: flex;
-        } 
-        body { background-color: var(--bg); color: var(--text);
-        font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; padding: 20px; justify-content: center; transition: 0.3s;
-        }
-        .container { width: 100%; max-width: 900px; display: flex; flex-direction: column; gap: 20px;
-        }
-        .card { background-color: var(--card);
-        border-radius: 8px; padding: 20px; border: 1px solid var(--border); box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-        }
-        .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 15px;
-        border-bottom: 1px solid var(--border); margin-bottom: 15px; }
-        .header-title { display: flex; align-items: center;
-        gap: 10px; font-size: 1.2rem; font-weight: 600; }
-        .header-title span { color: #f1c40f;
-        }
-        .tools { display: flex; gap: 10px;
-        }
-        .tool-btn { width: 40px; height: 40px; background: var(--input-bg); border: 1px solid var(--border);
-        color: var(--text); border-radius: 6px; cursor: pointer; transition: 0.2s; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; position: relative;
-        }
-        .tool-btn:hover { border-color: var(--accent); background: #2b303b;
-        }
-        .tool-btn::before { content: attr(data-tooltip); position: absolute; bottom: -35px; left: 50%; transform: translateX(-50%);
-        padding: 5px 10px; background: rgba(0,0,0,0.85); color: #fff; font-size: 12px; border-radius: 4px; white-space: nowrap; pointer-events: none; opacity: 0; visibility: hidden;
-        transition: 0.2s; z-index: 10; }
-        .tool-btn:hover::before { opacity: 1; visibility: visible; bottom: -40px;
-        }
-        .status-dot { width: 8px; height: 8px; border-radius: 50%; position: absolute; top: 5px;
-        right: 5px; }
-        .status-dot.on { background-color: var(--green); box-shadow: 0 0 5px var(--green);
-        }
-        .status-dot.off { background-color: var(--red);
-        }
-        .status-grid { display: grid; grid-template-columns: 1fr 1.5fr; gap: 20px;
-        }
-        .circle-chart-box { background: var(--input-bg); border-radius: 8px; display: flex; flex-direction: column; align-items: center;
-        justify-content: center; padding: 25px; border: 1px dashed var(--border); }
-        .circle-ring { width: 100px;
-        height: 100px; border-radius: 50%; border: 8px solid var(--border); border-top-color: var(--green); margin-bottom: 15px; flex-shrink: 0;
-        }
-        .circle-val { font-size: 2.2rem; font-weight: bold; color: var(--green); line-height: 1; margin-bottom: 5px;
-        }
-        .circle-label { font-size: 0.85rem; color: #888; white-space: nowrap;
-        }
-        .info-list { display: flex; flex-direction: column; gap: 10px;
-        }
-        .info-item { background: var(--input-bg); padding: 12px 15px; border-radius: 6px; display: flex;
-        justify-content: space-between; align-items: center; font-size: 0.9rem; }
-        .info-val { font-family: monospace; color: var(--green);
-        }
-        .section-title { font-size: 0.95rem; color: var(--accent); margin-bottom: 10px; font-weight: 600; display: flex;
-        align-items: center; gap: 5px; }
-        .input-block { margin-bottom: 12px;
-        }
-        label { display: block; font-size: 0.8rem; color: #888; margin-bottom: 6px;
-        }
-        input[type="text"], textarea { width: 100%; background: var(--input-bg); border: 1px solid var(--border);
-        color: var(--text); padding: 12px; border-radius: 6px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; outline: none; transition: 0.2s; box-sizing: border-box;
-        }
-        input[type="text"]:focus, textarea:focus { border-color: var(--accent);
-        }
-        textarea { 
-            min-height: 100px; 
-            resize: vertical; 
-            overflow-y: auto; 
-            white-space: pre-wrap; /* 允许自动换行 */
-            word-wrap: break-word; /* 允许长单词换行 */
-            word-break: break-all; /* 强制断开长链接 */
-        }
-        .input-group-row { display: flex; gap: 10px;
-        }
-        .input-group-row input { flex: 1;
-        }
-        .btn-check { background: #1f3a52; color: #fff; border: 1px solid #2b303b;
-        padding: 0 15px; border-radius: 6px; cursor: pointer; white-space: nowrap; font-weight: bold;
-        }
-        .btn-check:hover { background: #2a4d6e;
-        }
-        .btn-copy { background: #1f3a52; color: #fff; border: 1px solid #2b303b;
-        padding: 0 15px; border-radius: 4px; cursor: pointer; }
-        .btn-main { flex: 2;
-        background: var(--green); color: #fff; border: none; padding: 12px; border-radius: 4px; cursor: pointer; font-weight: bold;
-        }
-        .btn-test { flex: 1; background: #1f3a52; color: #fff; border: 1px solid #1e4a75;
-        padding: 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        .checkbox-row { display: flex;
-        justify-content: flex-end; align-items: center; gap: 5px; font-size: 0.85rem; color: #888; margin-bottom: 5px;
-        }
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%;
-        height: 100%; background: rgba(0,0,0,0.5); z-index: 100; justify-content: center; align-items: center;
-        }
-        .modal.show { display: flex;
-        }
-        .modal-content { background: var(--modal-bg); padding: 25px; border-radius: 12px; width: 90%; max-width: 420px;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.4); border: 1px solid var(--border); }
-        .modal-head { display: flex;
-        justify-content: space-between; margin-bottom: 20px; font-weight: bold; font-size: 1.2rem; align-items: center;
-        }
-        .modal-head span { display: flex; align-items: center; gap: 8px;
-        }
-        .close-btn { cursor: pointer; color: #888; font-size: 1.2rem;
-        }
-        .modal-btns { display: flex; gap: 10px; margin-top: 25px;
-        }
-        .modal-btns button { flex: 1; padding: 12px; border-radius: 8px; border: none;
-        cursor: pointer; font-weight: bold; font-size: 0.95rem; color: white; transition: 0.2s;
-        }
-        .btn-valid { background: #2f80ed; } .btn-save { background: #f2994a;
-        } .btn-cancel { background: #e0e0e0; color: #333 !important; }
-        .log-box { font-family: monospace;
-        font-size: 0.8rem; max-height: 200px; overflow-y: auto; background: var(--input-bg); padding: 10px; border-radius: 4px;
-        }
-        /* 修复日志布局: Flex -> Grid / Flex Widths */
+        body { display: none; opacity: 0; transition: opacity 0.3s; }
+        body.loaded { display: flex; opacity: 1; }
+        :root { --bg: #121418; --card: #1e222a; --text: #e0e0e0; --border: #2a2f38; --accent: #3498db; --green: #2ecc71; --red: #e74c3c; --input-bg: #15181e; --modal-bg: #1e222a; }
+        body.light { --bg: #f0f2f5; --card: #ffffff; --text: #333333; --border: #e0e0e0; --accent: #3498db; --green: #27ae60; --red: #c0392b; --input-bg: #f9f9f9; --modal-bg: #ffffff; }
+        body { background-color: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; padding: 20px; justify-content: center; }
+        .container { width: 100%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; }
+        .card { background-color: var(--card); border-radius: 8px; padding: 20px; border: 1px solid var(--border); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 15px; border-bottom: 1px solid var(--border); margin-bottom: 15px; }
+        .header-title { display: flex; align-items: center; gap: 10px; font-size: 1.2rem; font-weight: 600; }
+        .header-title span { color: #f1c40f; }
+        .tools { display: flex; gap: 10px; }
+        .tool-btn { width: 40px; height: 40px; background: var(--input-bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; cursor: pointer; transition: 0.2s; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; position: relative; }
+        .tool-btn:hover { border-color: var(--accent); background: #2b303b; }
+        .tool-btn::before { content: attr(data-tooltip); position: absolute; bottom: -35px; left: 50%; transform: translateX(-50%); padding: 5px 10px; background: rgba(0,0,0,0.85); color: #fff; font-size: 12px; border-radius: 4px; white-space: nowrap; pointer-events: none; opacity: 0; visibility: hidden; transition: 0.2s; z-index: 10; }
+        .tool-btn:hover::before { opacity: 1; visibility: visible; bottom: -40px; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; position: absolute; top: 5px; right: 5px; }
+        .status-dot.on { background-color: var(--green); box-shadow: 0 0 5px var(--green); }
+        .status-dot.off { background-color: var(--red); }
+        .status-grid { display: grid; grid-template-columns: 1fr 1.5fr; gap: 20px; }
+        .circle-chart-box { background: var(--input-bg); border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 25px; border: 1px dashed var(--border); }
+        .circle-ring { width: 100px; height: 100px; border-radius: 50%; border: 8px solid var(--border); border-top-color: var(--green); margin-bottom: 15px; flex-shrink: 0; }
+        .circle-val { font-size: 2.2rem; font-weight: bold; color: var(--green); line-height: 1; margin-bottom: 5px; }
+        .circle-label { font-size: 0.85rem; color: #888; white-space: nowrap; }
+        .info-list { display: flex; flex-direction: column; gap: 10px; }
+        .info-item { background: var(--input-bg); padding: 12px 15px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+        .info-val { font-family: monospace; color: var(--green); }
+        .section-title { font-size: 0.95rem; color: var(--accent); margin-bottom: 10px; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+        .input-block { margin-bottom: 12px; }
+        label { display: block; font-size: 0.8rem; color: #888; margin-bottom: 6px; }
+        input[type="text"], textarea { width: 100%; background: var(--input-bg); border: 1px solid var(--border); color: var(--text); padding: 12px; border-radius: 6px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; outline: none; transition: 0.2s; box-sizing: border-box; }
+        input[type="text"]:focus, textarea:focus { border-color: var(--accent); }
+        textarea { min-height: 100px; resize: vertical; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; }
+        .input-group-row { display: flex; gap: 10px; }
+        .input-group-row input { flex: 1; }
+        .btn-check { background: #1f3a52; color: #fff; border: 1px solid #2b303b; padding: 0 15px; border-radius: 6px; cursor: pointer; white-space: nowrap; font-weight: bold; }
+        .btn-check:hover { background: #2a4d6e; }
+        .btn-copy { background: #1f3a52; color: #fff; border: 1px solid #2b303b; padding: 0 15px; border-radius: 4px; cursor: pointer; }
+        .btn-main { flex: 2; background: var(--green); color: #fff; border: none; padding: 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .btn-test { flex: 1; background: #1f3a52; color: #fff; border: 1px solid #1e4a75; padding: 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .checkbox-row { display: flex; justify-content: flex-end; align-items: center; gap: 5px; font-size: 0.85rem; color: #888; margin-bottom: 5px; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100; justify-content: center; align-items: center; }
+        .modal.show { display: flex; }
+        .modal-content { background: var(--modal-bg); padding: 25px; border-radius: 12px; width: 90%; max-width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.4); border: 1px solid var(--border); }
+        .modal-head { display: flex; justify-content: space-between; margin-bottom: 20px; font-weight: bold; font-size: 1.2rem; align-items: center; }
+        .modal-head span { display: flex; align-items: center; gap: 8px; }
+        .close-btn { cursor: pointer; color: #888; font-size: 1.2rem; }
+        .modal-btns { display: flex; gap: 10px; margin-top: 25px; }
+        .modal-btns button { flex: 1; padding: 12px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; font-size: 0.95rem; color: white; transition: 0.2s; }
+        .btn-valid { background: #2f80ed; } .btn-save { background: #f2994a; } .btn-cancel { background: #e0e0e0; color: #333 !important; } .btn-clear { background: #e74c3c; }
+        .log-box { font-family: monospace; font-size: 0.8rem; max-height: 200px; overflow-y: auto; background: var(--input-bg); padding: 10px; border-radius: 4px; }
         .log-entry { border-bottom: 1px solid var(--border); padding: 8px 0; display: flex; align-items: center; gap: 10px; }
         .log-time { color: #888; width: 150px; flex-shrink: 0; font-size: 0.85rem; font-family: monospace; }
         .log-ip { color: var(--text); width: 260px; flex-shrink: 0; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .log-loc { color: #888; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.85rem; }
         .log-tag { width: 80px; text-align: center; background: #f39c12; color: white; padding: 2px 0; border-radius: 4px; font-size: 0.75rem; flex-shrink: 0; }
         .log-tag.green { background: var(--green); }
+        
+        .wl-table { width:100%; border-collapse: collapse; font-size:0.85rem; margin-top:10px; }
+        .wl-table th, .wl-table td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+        .wl-table th { color: #888; font-weight: normal; }
+        .btn-del { background: var(--red); color:white; border:none; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:0.75rem;}
+        .sys-tag { background: #7f8c8d; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; }
+        .source-tag { font-size: 0.75rem; margin-top: 4px; display: block; }
+        .source-tag.sys { color: #f1c40f; } .source-tag.man { color: #2ecc71; }
 
-        .ban-table { width:100%; border-collapse: collapse; font-size:0.85rem;
-        }
-        .ban-table th, .ban-table td { text-align: left; padding: 8px;
-        border-bottom: 1px solid var(--border); }
-        .ban-table th { color: #888; font-weight: normal;
-        }
-        .btn-del { background: var(--red); color:white; border:none; padding:4px 10px; border-radius:4px; cursor:pointer;
-        font-size:0.75rem;}
-        #toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: var(--green);
-        color: white; padding: 8px 20px; border-radius: 20px; opacity: 0; transition: 0.3s; pointer-events: none;
-        }
-        .refresh-btn { width: 100%; background: #1f3a52; color: #64b5f6; border: 1px solid #1e4a75;
-        padding: 10px; border-radius: 6px; cursor: pointer; margin-top: 10px; transition: 0.2s; font-weight:bold;
-        }
-        @media (max-width: 600px) { .status-grid { grid-template-columns: 1fr; } .input-group-row { flex-direction:column;
-        } }
+        #toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: var(--green); color: white; padding: 8px 20px; border-radius: 20px; opacity: 0; transition: 0.3s; pointer-events: none; }
+        .refresh-btn { width: 100%; background: #1f3a52; color: #64b5f6; border: 1px solid #1e4a75; padding: 10px; border-radius: 6px; cursor: pointer; margin-top: 10px; transition: 0.2s; font-weight:bold; }
+        @media (max-width: 600px) { .status-grid { grid-template-columns: 1fr; } .input-group-row { flex-direction:column; } }
     </style>
 </head>
 <body id="mainBody">
@@ -561,12 +367,8 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
                 <div class="header-title"><span>⚡</span> Worker 控制台</div>
                 <div class="tools">
                     <button class="tool-btn" onclick="toggleTheme()" data-tooltip="切换黑/白主题">🌗</button>
-                    <button class="tool-btn" onclick="showModal('tgModal')" data-tooltip="添加bot机器人监控">
-                        🤖 <span class="status-dot ${tgState ? 'on' : 'off'}"></span>
-                    </button>
-                    <button class="tool-btn" onclick="showModal('cfModal')" data-tooltip="添加cloudflare API请求数统计">
-                        ☁️ <span class="status-dot ${cfState ? 'on' : 'off'}"></span>
-                    </button>
+                    <button class="tool-btn" onclick="showModal('tgModal')" data-tooltip="添加bot机器人监控">🤖 <span class="status-dot ${tgState ? 'on' : 'off'}"></span></button>
+                    <button class="tool-btn" onclick="showModal('cfModal')" data-tooltip="添加cloudflare API请求数统计">☁️ <span class="status-dot ${cfState ? 'on' : 'off'}"></span></button>
                     <button class="tool-btn logout-btn" onclick="logout()" style="background:#c0392b;color:white" data-tooltip="退出登录">⏻</button>
                 </div>
             </div>
@@ -621,23 +423,40 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
             
             <div class="input-block">
                 <label>订阅链接</label>
-                <textarea id="finalLink" readonly>${longLink}</textarea>
+                <textarea id="finalLink">${longLink}</textarea>
             </div>
 
             <div class="action-btns">
                 <button class="btn-main" onclick="copyId('finalLink')">复制链接</button>
-                <button class="btn-test" onclick="window.open(document.getElementById('finalLink').value)">测试访问</button>
+                <button class="btn-test" onclick="testSub()">测试访问</button>
             </div>
         </div>
+        
+        <!-- 🛡️ 白名单管理卡片 -->
+        <div class="card">
+            <div class="section-title" style="justify-content:space-between">
+                <span>🛡️ 白名单 IP 管理</span>
+                <button class="tool-btn" onclick="loadWhitelist()" style="width:auto;padding:6px 12px;font-size:0.8rem">刷新</button>
+            </div>
+           <div class="input-group-row" style="margin-bottom:10px">
+                <input type="text" id="newWhitelistIp" placeholder="输入 IP 地址 (IPv4/IPv6)">
+                <button class="btn-check" onclick="addWhitelist()" style="background:var(--green);border:none;">添加白名单</button>
+            </div>
+            <div style="max-height:200px; overflow-y:auto; border:1px solid var(--border); border-radius:4px;">
+                <table class="wl-table">
+                    <thead><tr><th>IP 地址</th><th style="width:80px">操作</th></tr></thead>
+                    <tbody id="whitelistBody"><tr><td colspan="2" style="text-align:center">加载中...</td></tr></tbody>
+                </table>
+            </div>
+            <div style="font-size:0.75rem; color:#888; margin-top:5px">提示：🔒 系统内置 IP 需要修改代码或环境变量才能删除。</div>
+        </div>
 
-        <!-- 🛠️ 优选IP与远程配置卡片 (移动到下方) -->
         <div class="card">
             <div class="section-title" style="justify-content:space-between">
                 <span>🛠️ 优选 IP 与 远程配置</span>
                 <button class="tool-btn" onclick="saveNodeConfig()" style="width:auto;padding:6px 12px;font-size:0.8rem;background:var(--green);border:none;color:white;font-weight:bold;">💾 保存配置</button>
             </div>
             <div style="font-size:0.8rem;color:#e74c3c;margin-bottom:10px;">⚠️ 注意：若要在此生效，请确保 Cloudflare 后台未设置对应环境变量 (ADD/ADDAPI/ADDCSV)</div>
-            
             <div class="input-block">
                 <label>ADD - 本地优选 IP (格式: IP:Port#Name，一行一个)</label>
                 <textarea id="inpAdd" placeholder="1.1.1.1:443#US">${safeVal(add)}</textarea>
@@ -654,23 +473,6 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
 
         <div class="card">
             <div class="section-title" style="justify-content:space-between">
-                <span>🚫 黑名单 IP 管理</span>
-                <button class="tool-btn" onclick="loadBans()" style="width:auto;padding:6px 12px;font-size:0.8rem">刷新</button>
-            </div>
-           <div class="input-group-row" style="margin-bottom:10px">
-                <input type="text" id="newBanIp" placeholder="输入 IP 地址">
-                <button class="btn-check" onclick="addBan()">添加封禁</button>
-            </div>
-            <div style="max-height:200px; overflow-y:auto; border:1px solid var(--border); border-radius:4px;">
-                <table class="ban-table">
-                    <thead><tr><th>IP 地址</th><th style="width:60px">操作</th></tr></thead>
-                    <tbody id="banListBody"><tr><td colspan="2" style="text-align:center">加载中...</td></tr></tbody>
-                </table>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="section-title" style="justify-content:space-between">
                 <span>📋 操作日志 (DB/KV 4MB)</span>
                 <button class="tool-btn" onclick="loadLogs()" style="width:auto;padding:6px 12px;font-size:0.8rem">刷新</button>
             </div>
@@ -682,12 +484,15 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
         <div class="modal-content">
             <div class="modal-head"><span>🤖 Telegram 通知配置</span><span class="close-btn" onclick="closeModal('tgModal')">×</span></div>
             <label>Bot Token</label>
-            <input type="text" id="tgToken" placeholder="123456:ABC-DEF...">
+            <input type="text" id="tgToken" placeholder="123456:ABC-DEF..." value="${safeVal(tgToken)}">
+            ${getStatusLabel(tgToken, sysParams.tgToken)}
             <label style="margin-top:10px">Chat ID</label>
-            <input type="text" id="tgId" placeholder="123456789">
+            <input type="text" id="tgId" placeholder="123456789" value="${safeVal(tgId)}">
+            ${getStatusLabel(tgId, sysParams.tgId)}
             <div class="modal-btns">
                 <button class="btn-valid" onclick="validateApi('tg')">可用性验证</button>
                 <button class="btn-save" onclick="saveConfig({TG_BOT_TOKEN: val('tgToken'), TG_CHAT_ID: val('tgId')}, 'tgModal')">保存</button>
+                <button class="btn-clear" onclick="clearConfig('tg')">清除配置</button>
                 <button class="btn-cancel" onclick="closeModal('tgModal')">取消</button>
             </div>
         </div>
@@ -698,174 +503,133 @@ function dashPage(host, uuid, proxyip, subpass, subdomain, converter, env, clien
             <div class="modal-head"><span>☁️ Cloudflare 统计配置</span><span class="close-btn" onclick="closeModal('cfModal')">×</span></div>
             <div style="margin-bottom:15px;border-bottom:1px solid var(--border);padding-bottom:10px">
                 <label>方案1: Account ID + API Token</label>
-                <input type="text" id="cfAcc" placeholder="Account ID" style="margin-bottom:10px">
-                <input type="text" id="cfTok" placeholder="API Token (Read permission)">
+                <input type="text" id="cfAcc" placeholder="Account ID" style="margin-bottom:10px" value="${safeVal(cfId)}">
+                ${getStatusLabel(cfId, sysParams.cfId)}
+                <input type="text" id="cfTok" placeholder="API Token (Read permission)" value="${safeVal(cfToken)}">
+                ${getStatusLabel(cfToken, sysParams.cfToken)}
             </div>
             <label>方案2: Email + Global Key</label>
-            <input type="text" id="cfMail" placeholder="Email" style="margin-bottom:10px">
-            <input type="text" id="cfKey" placeholder="Global API Key">
+            <input type="text" id="cfMail" placeholder="Email" style="margin-bottom:10px" value="${safeVal(cfMail)}">
+            ${getStatusLabel(cfMail, sysParams.cfMail)}
+            <input type="text" id="cfKey" placeholder="Global API Key" value="${safeVal(cfKey)}">
+            ${getStatusLabel(cfKey, sysParams.cfKey)}
             <div class="modal-btns">
                 <button class="btn-valid" onclick="validateApi('cf')">可用性验证</button>
                 <button class="btn-save" onclick="saveConfig({CF_ID:val('cfAcc'), CF_TOKEN:val('cfTok'), CF_EMAIL:val('cfMail'), CF_KEY:val('cfKey')}, 'cfModal')">保存</button>
+                <button class="btn-clear" onclick="clearConfig('cf')">清除配置</button>
                 <button class="btn-cancel" onclick="closeModal('cfModal')">取消</button>
             </div>
         </div>
     </div>
-
     <div id="toast">已复制</div>
-
     <script>
         const UUID = "${uuid}";
         const CONVERTER = "${converter}";
         const CLIENT_IP = "${clientIP}";
         const HAS_AUTH = ${hasAuth};
-        if (HAS_AUTH && !sessionStorage.getItem("is_active")) {
-            document.cookie = "auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
-            window.location.reload();
-        } else {
-            document.body.classList.add('loaded');
-        }
+        
+        window.addEventListener('DOMContentLoaded', () => {
+            if (HAS_AUTH && !sessionStorage.getItem("is_active")) {
+                document.cookie = "auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
+                window.location.reload();
+            } else {
+                document.body.classList.add('loaded');
+            }
+        });
 
-        function val(id) { return document.getElementById(id).value;
-        }
-        function showModal(id) { document.getElementById(id).classList.add('show');
-        }
-        function closeModal(id) { document.getElementById(id).classList.remove('show');
-        }
-
+        function val(id) { return document.getElementById(id).value; }
+        function showModal(id) { document.getElementById(id).classList.add('show'); }
+        function closeModal(id) { document.getElementById(id).classList.remove('show'); }
         async function updateStats() {
-            try {
-                const start = Date.now();
-                await fetch('https://www.google.com/generate_204', {mode: 'no-cors'});
-                document.getElementById('googleStatus').innerText = (Date.now() - start) + 'ms';
-            } catch (e) { document.getElementById('googleStatus').innerText = 'Timeout';
-            }
-
-            try {
-                const res = await fetch('?flag=stats');
-                const data = await res.json();
-                document.getElementById('reqCount').innerText = data.req;
-                document.getElementById('apiStatus').innerText = data.cfConfigured ? 'Connected' : 'Internal';
-                document.getElementById('currentIp').innerText = data.ip;
-                document.getElementById('kvStatus').innerText = data.hasKV ? 'D1/KV OK' : 'Missing';
-            } catch (e) { document.getElementById('reqCount').innerText = 'N/A';
-            }
+            try { const start = Date.now(); await fetch('https://www.google.com/generate_204', {mode: 'no-cors'}); document.getElementById('googleStatus').innerText = (Date.now() - start) + 'ms'; } catch (e) { document.getElementById('googleStatus').innerText = 'Timeout'; }
+            try { const res = await fetch('?flag=stats'); const data = await res.json(); document.getElementById('reqCount').innerText = data.req; document.getElementById('apiStatus').innerText = data.cfConfigured ? 'Connected' : 'Internal'; document.getElementById('currentIp').innerText = data.ip; document.getElementById('kvStatus').innerText = data.hasKV ? 'D1/KV OK' : 'Missing'; } catch (e) { document.getElementById('reqCount').innerText = 'N/A'; }
         }
-
         async function loadLogs() {
-            try {
-                const res = await fetch('?flag=get_logs');
-                const data = await res.json();
-                let html = '';
-                if (data.type === 'd1' && Array.isArray(data.logs)) {
-                    html = data.logs.map(log => \`<div class="log-entry"><span class="log-time">\${log.time}</span><span class="log-ip">\${log.ip}</span><span class="log-loc">\${log.region}</span><span class="log-tag \${log.action.includes('订阅')||log.action.includes('检测')?'green':''}">\${log.action}</span></div>\`).join('');
-                } else if (data.logs && typeof data.logs === 'string') {
-                     html = data.logs.split('\\n').filter(x=>x).slice(0, 50).map(line => {
-                        const p = line.split('|');
-                        return \`<div class="log-entry"><span class="log-time">\${p[0]}</span><span class="log-ip">\${p[1]}</span><span class="log-loc">\${p[2]}</span><span class="log-tag \${p[3].includes('订阅')||p[3].includes('检测')?'green':''}">\${p[3]}</span></div>\`;
-                    }).join('');
-                }
+            try { const res = await fetch('?flag=get_logs'); const data = await res.json(); let html = '';
+                if (data.type === 'd1' && Array.isArray(data.logs)) { html = data.logs.map(log => "<div class='log-entry'><span class='log-time'>" + log.time + "</span><span class='log-ip'>" + log.ip + "</span><span class='log-loc'>" + log.region + "</span><span class='log-tag " + (log.action.includes('订阅')||log.action.includes('检测')?'green':'') + "'>" + log.action + "</span></div>").join(''); } 
+                else if (data.logs && typeof data.logs === 'string') { html = data.logs.split('\\n').filter(x=>x).slice(0, 50).map(line => { const p = line.split('|'); return "<div class='log-entry'><span class='log-time'>" + p[0] + "</span><span class='log-ip'>" + p[1] + "</span><span class='log-loc'>" + p[2] + "</span><span class='log-tag " + (p[3].includes('订阅')||p[3].includes('检测')?'green':'') + "'>" + p[3] + "</span></div>"; }).join(''); }
                 document.getElementById('logBox').innerHTML = html || '暂无日志';
             } catch(e) { document.getElementById('logBox').innerText = '加载失败或未绑定 DB/KV'; }
         }
-
-        async function loadBans() {
+        
+        async function loadWhitelist() {
             try {
-                const res = await fetch('?flag=get_bans');
+                const res = await fetch('?flag=get_whitelist');
                 const data = await res.json();
                 const list = data.list || [];
                 const html = list.length ?
-                list.map(ip => \`<tr><td>\${ip}</td><td><button class="btn-del" onclick="delBan('\${ip}')">删除</button></td></tr>\`).join('') : '<tr><td colspan="2" style="text-align:center">暂无封禁 IP</td></tr>';
-                document.getElementById('banListBody').innerHTML = html;
-            } catch(e) { document.getElementById('banListBody').innerHTML = '<tr><td colspan="2">加载失败</td></tr>';
-            }
+                list.map(item => {
+                    const actionHtml = item.type === 'system' ? '<span class="sys-tag">🔒 系统内置</span>' : "<button class='btn-del' onclick='delWhitelist(\\"" + item.ip + "\\")'>🗑️ 删除</button>";
+                    return "<tr><td>" + item.ip + "</td><td>" + actionHtml + "</td></tr>";
+                }).join('') : '<tr><td colspan="2" style="text-align:center">暂无白名单 IP</td></tr>';
+                document.getElementById('whitelistBody').innerHTML = html;
+            } catch(e) { document.getElementById('whitelistBody').innerHTML = '<tr><td colspan="2">加载失败</td></tr>'; }
         }
 
-        async function addBan() {
-            const ip = document.getElementById('newBanIp').value.trim();
+        async function addWhitelist() {
+            const ip = document.getElementById('newWhitelistIp').value.trim();
             if(!ip) return;
             try {
-                await fetch('?flag=add_ban', { method:'POST', body:JSON.stringify({ip}) });
-                document.getElementById('newBanIp').value = '';
-                loadBans();
+                await fetch('?flag=add_whitelist', { method:'POST', body:JSON.stringify({ip}) });
+                document.getElementById('newWhitelistIp').value = '';
+                loadWhitelist();
             } catch(e) { alert('添加失败'); }
         }
 
-        async function delBan(ip) {
-            if(!confirm('确定解封 '+ip+'?')) return;
-            try { await fetch('?flag=del_ban', { method:'POST', body:JSON.stringify({ip}) }); loadBans(); } catch(e) { alert('删除失败');
+        async function delWhitelist(ip) {
+            if(!confirm('确定移除 '+ip+'?')) return;
+            try { await fetch('?flag=del_whitelist', { method:'POST', body:JSON.stringify({ip}) }); loadWhitelist(); } catch(e) { alert('删除失败'); }
+        }
+
+        async function checkProxy() {
+            const val = document.getElementById('pIp').value;
+            if(val) {
+                try {
+                    await navigator.clipboard.writeText(val);
+                    alert("✅ ProxyIP 已复制成功\\n\\n点击确定跳转检测网站...");
+                } catch(e) {
+                    alert("跳转检测网站...");
+                }
+                fetch('?flag=log_proxy_check');
+                window.open("${PROXY_CHECK_URL}", "_blank");
+            }
+        }
+
+        function testSub() {
+            const url = document.getElementById('finalLink').value;
+            if(url) {
+                fetch('?flag=log_sub_test');
+                window.open(url);
             }
         }
 
         async function saveConfig(data, modalId) {
-            try {
-                await fetch('?flag=save_config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
-                alert('保存成功'); 
-                if(modalId) closeModal(modalId);
-                setTimeout(() => location.reload(), 500);
-            } catch(e) { alert('保存失败: ' + e);
-            }
+            try { await fetch('?flag=save_config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }); alert('保存成功'); if(modalId) closeModal(modalId); setTimeout(() => location.reload(), 500); } catch(e) { alert('保存失败: ' + e); }
         }
-
-        // 新增：保存节点配置
-        function saveNodeConfig() {
-            const data = {
-                ADD: val('inpAdd'),
-                ADDAPI: val('inpAddApi'),
-                ADDCSV: val('inpAddCsv')
-            };
-            saveConfig(data, null);
+        function saveNodeConfig() { const data = { ADD: val('inpAdd'), ADDAPI: val('inpAddApi'), ADDCSV: val('inpAddCsv') }; saveConfig(data, null); }
+        async function clearConfig(type) {
+            if(!confirm('确定清除后台配置？\\n(若存在系统环境变量，清除后将自动恢复为系统值)')) return;
+            let data = {};
+            if(type === 'tg') data = { TG_BOT_TOKEN: "", TG_CHAT_ID: "" };
+            if(type === 'cf') data = { CF_ID: "", CF_TOKEN: "", CF_EMAIL: "", CF_KEY: "" };
+            saveConfig(data, type + 'Modal');
         }
-        
         async function validateApi(type) {
-            const endpoint = type === 'tg' ? 'validate_tg' : 'validate_cf';
-            let payload = {};
-            if(type === 'tg') payload = { TG_BOT_TOKEN: val('tgToken'), TG_CHAT_ID: val('tgId') };
-            else payload = { CF_ID:val('cfAcc'), CF_TOKEN:val('cfTok'), CF_EMAIL:val('cfMail'), CF_KEY:val('cfKey') };
-            try {
-                const res = await fetch('?flag=' + endpoint, { method:'POST', body:JSON.stringify(payload) });
-                const d = await res.json();
-                alert(d.msg || (d.success ? '验证通过' : '验证失败'));
-            } catch(e) { alert('请求错误');
-            }
+            const endpoint = type === 'tg' ? 'validate_tg' : 'validate_cf'; let payload = {};
+            if(type === 'tg') payload = { TG_BOT_TOKEN: val('tgToken'), TG_CHAT_ID: val('tgId') }; else payload = { CF_ID:val('cfAcc'), CF_TOKEN:val('cfTok'), CF_EMAIL:val('cfMail'), CF_KEY:val('cfKey') };
+            try { const res = await fetch('?flag=' + endpoint, { method:'POST', body:JSON.stringify(payload) }); const d = await res.json(); alert(d.msg || (d.success ? '验证通过' : '验证失败')); } catch(e) { alert('请求错误'); }
         }
-
-        function toggleTheme() { document.body.classList.toggle('light');
-        }
-
+        function toggleTheme() { document.body.classList.toggle('light'); }
         function updateLink() {
-            let base = document.getElementById('subDom').value.trim();
-            let host = document.getElementById('hostDom').value.trim();
-            let p = document.getElementById('pIp').value.trim();
-            let isClash = document.getElementById('clashMode').checked;
-            let path = p ? "/proxyip=" + p : "/";
-            const search = new URLSearchParams();
-            search.set('uuid', UUID); search.set('encryption', 'none'); search.set('security', 'tls'); search.set('sni', host); search.set('alpn', 'h3');
-            search.set('fp', 'random'); search.set('allowInsecure', '1'); search.set('type', 'ws'); search.set('host', host); search.set('path', path);
+            let base = document.getElementById('subDom').value.trim(); let host = document.getElementById('hostDom').value.trim(); let p = document.getElementById('pIp').value.trim(); let isClash = document.getElementById('clashMode').checked; let path = p ? "/proxyip=" + p : "/";
+            const search = new URLSearchParams(); search.set('uuid', UUID); search.set('encryption', 'none'); search.set('security', 'tls'); search.set('sni', host); search.set('alpn', 'h3'); search.set('fp', 'random'); search.set('allowInsecure', '1'); search.set('type', 'ws'); search.set('host', host); search.set('path', path);
             let finalUrl = \`https://\${base}/sub?\${search.toString()}\`;
-            if (isClash) {
-                let subUrl = CONVERTER + "/sub?target=clash&url=" + encodeURIComponent(finalUrl) + "&emoji=true&list=false&sort=false";
-                document.getElementById('finalLink').value = subUrl;
-            } else { document.getElementById('finalLink').value = finalUrl; }
+            if (isClash) { let subUrl = CONVERTER + "/sub?target=clash&url=" + encodeURIComponent(finalUrl) + "&emoji=true&list=false&sort=false"; document.getElementById('finalLink').value = subUrl; } else { document.getElementById('finalLink').value = finalUrl; }
         }
-
-        function toggleClash() { updateLink();
-        }
-        function copyId(id) { const el = document.getElementById(id); el.select();
-        navigator.clipboard.writeText(el.value).then(() => { const t = document.getElementById('toast'); t.classList.add('show'); t.style.opacity=1; setTimeout(() => t.style.opacity=0, 2000); });
-        }
-        function checkProxy() { fetch('?flag=log_proxy_check'); window.open("${PROXY_CHECK_URL}", "_blank");
-        }
-        function logout() { document.cookie = "auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
-        sessionStorage.removeItem("is_active"); location.reload(); }
-
-        updateStats();
-        loadLogs(); 
-        loadBans(); 
-        updateLink();
-        
-        // 自动刷新日志（每3秒）
-        setInterval(loadLogs, 3000);
+        function toggleClash() { updateLink(); }
+        function copyId(id) { const el = document.getElementById(id); el.select(); navigator.clipboard.writeText(el.value).then(() => { const t = document.getElementById('toast'); t.classList.add('show'); t.style.opacity=1; setTimeout(() => t.style.opacity=0, 2000); }); }
+        function logout() { document.cookie = "auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/"; sessionStorage.removeItem("is_active"); location.reload(); }
+        updateStats(); loadLogs(); loadWhitelist(); updateLink(); setInterval(loadLogs, 3000);
     </script>
 </body>
 </html>`;
@@ -905,22 +669,54 @@ export default {
           return new Response('Not Found', { status: 404 });
       }
 
-      // 身份识别
-      const wl = await getSafeEnv(env, 'WL_IP', "");
-      let isAdmin = wl && wl.includes(clientIP);
-      if (!isAdmin && _WEB_PW) {
-        const cookie = r.headers.get('Cookie') || "";
-        // 使用正则进行精确匹配：auth=密码 后面必须是分号或结尾
-        const regex = new RegExp(`auth=${_WEB_PW.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(;|$)`);
-        if (regex.test(cookie)) isAdmin = true;
-    }
-
-      // 黑名单拦截
-      if (!isAdmin) {
-        const bj = await getSafeEnv(env, 'BJ_IP', "");
-        if (bj && bj.includes(clientIP)) return new Response("403 Forbidden", { status: 403 });
-        if (await checkBan(env, clientIP)) return new Response("403 Forbidden", { status: 403 });
+      // =================================================================
+      // 1. 🛡️ 检查是否为管理员 (白名单逻辑)
+      //    判定顺序：ADMIN_IP常量 -> KV记录 -> D1记录
+      // =================================================================
+      // 解析 ADMIN_IP 常量 (预设白名单)
+      let hardcodedIPs = [];
+      if (typeof ADMIN_IP !== 'undefined' && ADMIN_IP && ADMIN_IP.trim() !== '') {
+          hardcodedIPs = ADMIN_IP.split(',').map(s => s.trim());
       }
+      
+      // 检查当前 IP 是否在白名单
+      let isGlobalAdmin = await checkWhitelist(env, clientIP);
+
+      // =================================================================
+      // 2. 🟢 身份验证逻辑 (决定权限与内容)
+      // =================================================================
+      let isValidUser = false; // 是否为合法用户 (有密码/UUID/或管理员)
+      let hasAuthCookie = false; // 是否登录了网页
+
+      // A. 检查 URL UUID (合法节点连接)
+      const paramUUID = url.searchParams.get('uuid');
+      if (paramUUID && paramUUID.toLowerCase() === _UUID.toLowerCase()) isValidUser = true;
+
+      // B. 检查 订阅路径 (合法订阅)
+      if (_SUB_PW && url.pathname === `/${_SUB_PW}`) isValidUser = true;
+
+      // C. 检查 登录Cookie (管理员)
+      if (_WEB_PW) {
+        const cookie = r.headers.get('Cookie') || "";
+        const regex = new RegExp(`auth=${_WEB_PW.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(;|$)`);
+        if (regex.test(cookie)) {
+            isValidUser = true;
+            hasAuthCookie = true;
+            // 🟢 登录成功！自动加入白名单 (永久记录)
+            if (!isGlobalAdmin) {
+                ctx.waitUntil(addWhitelist(env, clientIP));
+                isGlobalAdmin = true; // 标记本次请求为管理员
+            }
+        }
+      }
+
+      // D. 如果是白名单管理员，拥有最高权限
+      if (isGlobalAdmin) {
+          isValidUser = true;
+      }
+
+      // 每日统计
+      if (env.DB || env.LH) ctx.waitUntil(incrementDailyStats(env));
 
       if (url.pathname === '/favicon.ico') return new Response(null, { status: 404 });
       
@@ -928,11 +724,15 @@ export default {
       const flag = url.searchParams.get('flag');
       if (flag) {
           if (flag === 'github') {
-              await sendTgMsg(ctx, env, "🌟 用户点击了烈火项目", r, "来源: 登录页面直达链接", isAdmin);
+              await sendTgMsg(ctx, env, "🌟 用户点击了烈火项目", r, "来源: 登录页面直达链接", isGlobalAdmin);
               return new Response(null, { status: 204 });
           }
           if (flag === 'log_proxy_check') {
-              await sendTgMsg(ctx, env, "🔍 用户点击了 ProxyIP 检测", r, "来源: 后台管理面板", isAdmin);
+              await sendTgMsg(ctx, env, "🔍 用户点击了 ProxyIP 检测", r, "来源: 后台管理面板", isGlobalAdmin);
+              return new Response(null, { status: 204 });
+          }
+          if (flag === 'log_sub_test') { // 🟢 新增：订阅测试通知
+              await sendTgMsg(ctx, env, "🌟 用户点击了订阅测试", r, "来源: 后台管理面板", isGlobalAdmin);
               return new Response(null, { status: 204 });
           }
           if (flag === 'stats') {
@@ -950,6 +750,8 @@ export default {
               }), { headers: { 'Content-Type': 'application/json' } });
            }
           if (flag === 'get_logs') {
+              // 鉴权：必须登录或白名单
+              if (!hasAuthCookie && !isGlobalAdmin) return new Response('403 Forbidden', { status: 403 });
               if (env.DB) { try { const { results } = await env.DB.prepare("SELECT * FROM logs ORDER BY id DESC LIMIT 50").all();
               return new Response(JSON.stringify({ type: 'd1', logs: results }), { headers: { 'Content-Type': 'application/json' } });
               } catch(e) {} }
@@ -958,16 +760,22 @@ export default {
               } catch(e) {} }
               return new Response(JSON.stringify({ logs: "No Storage" }), { headers: { 'Content-Type': 'application/json' } });
           }
-          if (flag === 'get_bans') { return new Response(JSON.stringify({ list: await getBanList(env) }), { headers: { 'Content-Type': 'application/json' } });
+          if (flag === 'get_whitelist') { 
+              // 鉴权：必须登录或白名单
+              if (!hasAuthCookie && !isGlobalAdmin) return new Response('403 Forbidden', { status: 403 });
+              const list = await getAllWhitelist(env);
+              return new Response(JSON.stringify({ list }), { headers: { 'Content-Type': 'application/json' } });
           }
-          if (flag === 'add_ban' && r.method === 'POST') {
+          if (flag === 'add_whitelist' && r.method === 'POST') {
+              if (!hasAuthCookie && !isGlobalAdmin) return new Response('403 Forbidden', { status: 403 });
               const body = await r.json();
-              if(body.ip) await banIP(env, body.ip);
+              if(body.ip) await addWhitelist(env, body.ip);
               return new Response(JSON.stringify({status:'ok'}), {headers:{'Content-Type':'application/json'}});
           }
-          if (flag === 'del_ban' && r.method === 'POST') {
+          if (flag === 'del_whitelist' && r.method === 'POST') {
+              if (!hasAuthCookie && !isGlobalAdmin) return new Response('403 Forbidden', { status: 403 });
               const body = await r.json();
-              if(body.ip) await unbanIP(env, body.ip);
+              if(body.ip) await delWhitelist(env, body.ip);
               return new Response(JSON.stringify({status:'ok'}), {headers:{'Content-Type':'application/json'}});
           }
           if (flag === 'validate_tg' && r.method === 'POST') {
@@ -981,6 +789,8 @@ export default {
               return new Response(JSON.stringify({success:res.success, msg: res.success ? `验证通过: 总请求 ${res.total}` : `验证失败: ${res.msg}`}), {headers:{'Content-Type':'application/json'}});
            }
           if (flag === 'save_config' && r.method === 'POST') {
+              // 鉴权：必须登录或白名单
+              if (!hasAuthCookie && !isGlobalAdmin) return new Response('403 Forbidden', { status: 403 });
               try {
                   const body = await r.json();
                   for (const [k, v] of Object.entries(body)) {
@@ -989,22 +799,6 @@ export default {
                   }
                   return new Response(JSON.stringify({status: 'ok'}), { headers: { 'Content-Type': 'application/json' } });
               } catch(e) { return new Response(JSON.stringify({status: 'error', msg: e.toString()}), { headers: { 'Content-Type': 'application/json' } });
-              }
-          }
-      }
-
-      // 🛡️ 自动防刷
-      if (env.DB || env.LH) {
-          ctx.waitUntil(incrementDailyStats(env));
-          if (!isAdmin && r.headers.get('Upgrade') !== 'websocket') {
-              const isFlood = await checkFlood(env, clientIP);
-              if (isFlood) {
-                  const alreadyBanned = await checkBan(env, clientIP);
-                  if (!alreadyBanned) {
-                      await banIP(env, clientIP);
-                      await sendTgMsg(ctx, env, "🚫 自动封禁通知 (首次)", r, `原因: 频繁请求 (>=5次)\n来源 IP: ${clientIP}`, false);
-                  }
-                  return new Response("403 Forbidden", { status: 403 });
               }
           }
       }
@@ -1018,34 +812,18 @@ export default {
                   // 🟢 新增强大的客户端识别逻辑
                   const _d = (s) => atob(s);
                   const rules = [
-                      ['TWlob21v', 'bWlob21v'],               // Mihomo
-                      ['RmxDbGFzaA==', 'ZmxjbGFzaA=='],       // flclash
-                      ['Q2xhc2g=', 'Y2xhc2g='],               // Clash
-                      ['Q2xhc2g=', 'bWV0YQ=='],               // Meta
-                      ['Q2xhc2g=', 'c3Rhc2g='],               // Stash
-                      ['SGlkZGlmeQ==', 'aGlkZGlmeQ=='],       // Hiddify
-                      ['U2luZy1ib3g=', 'c2luZy1ib3g='],       // Sing-box
-                      ['U2luZy1ib3g=', 'c2luZ2JveA=='],       // singbox
-                      ['U2luZy1ib3g=', 'c2Zp'],               // sfi
-                      ['U2luZy1ib3g=', 'Ym94'],               // box
-                      ['djJyYXlOL0NvcmU=', 'djJyYXk='],       // v2
-                      ['U3VyZ2U=', 'c3VyZ2U='],               // Surge
-                      ['UXVhbnR1bXVsdCBY', 'cXVhbnR1bXVsdA=='], // QX
-                      ['U2hhZG93cm9ja2V0', 'c2hhZG93cm9ja2V0'], // Shadowrocket
-                      ['TG9vbg==', 'bG9vbg=='],               // Loon
-                      ['SGFB', 'aGFwcA==']                    // Happ
+                      ['TWlob21v', 'bWlob21v'], ['RmxDbGFzaA==', 'ZmxjbGFzaA=='], ['Q2xhc2g=', 'Y2xhc2g='], ['Q2xhc2g=', 'bWV0YQ=='], ['Q2xhc2g=', 'c3Rhc2g='], ['SGlkZGlmeQ==', 'aGlkZGlmeQ=='], ['U2luZy1ib3g=', 'c2luZy1ib3g='], ['U2luZy1ib3g=', 'c2luZ2JveA=='], ['U2luZy1ib3g=', 'c2Zp'], ['U2luZy1ib3g=', 'Ym94'], ['djJyYXlOL0NvcmU=', 'djJyYXk='], ['U3VyZ2U=', 'c3VyZ2U='], ['UXVhbnR1bXVsdCBY', 'cXVhbnR1bXVsdA=='], ['U2hhZG93cm9ja2V0', 'c2hhZG93cm9ja2V0'], ['TG9vbg==', 'bG9vbg=='], ['SGFB', 'aGFwcA==']
                   ];
                   let cName = "VW5rbm93bg=="; 
                   let isProxy = false;
                   for (const [n, k] of rules) { 
-                      if (UA_L.includes(_d(k))) { 
-                          cName = n; isProxy = true; break; 
-                      } 
+                      if (UA_L.includes(_d(k))) { cName = n; isProxy = true; break; } 
                   }
                   if (!isProxy && (UA_L.includes(_d('bW96aWxsYQ==')) || UA_L.includes(_d('Y2hyb21l')))) cName = "QnJvd3Nlcg==";
                   
                   const title = isProxy ? "🔄 快速订阅更新" : "🌐 访问快速订阅页";
-                  const p = sendTgMsg(ctx, env, title, r, `类型: ${_d(cName)}`, isAdmin);
+                  // 🟢 通知区分：如果是白名单，显示"管理员操作"，否则"用户访问"
+                  const p = sendTgMsg(ctx, env, title, r, `类型: ${_d(cName)}`, isGlobalAdmin);
                   if(ctx && ctx.waitUntil) ctx.waitUntil(p);
               } catch (e) {}
           }
@@ -1054,7 +832,6 @@ export default {
           const pathParam = requestProxyIp ? "/proxyip=" + requestProxyIp : "/";
           const subUrl = `https://${_SUB_DOMAIN}/sub?uuid=${_UUID}&encryption=none&security=tls&sni=${host}&alpn=h3&fp=random&allowInsecure=1&type=ws&host=${host}&path=${encodeURIComponent(pathParam)}`;
 
-          // 🟢 修复点：移除了重复定义的 UA_L，直接使用顶层变量，避免 TDZ 报错
           if (UA_L.includes('sing-box') || UA_L.includes('singbox') || UA_L.includes('clash') || UA_L.includes('meta')) {
               const type = (UA_L.includes('clash') || UA_L.includes('meta')) ? 'clash' : 'singbox';
               const config = type === 'clash' ? CLASH_CONFIG : SINGBOX_CONFIG_V12;
@@ -1066,7 +843,6 @@ export default {
           }
 
           try {
-            // 🛡️ 修复漏洞：防止 SUB_DOMAIN 设置为自己时导致的无限循环
             if (host.toLowerCase() !== _SUB_DOMAIN.toLowerCase()) {
                 const res = await fetch(subUrl, { headers: { 'User-Agent': UA } });
                 if (res.ok) {
@@ -1127,30 +903,41 @@ export default {
             'Referrer-Policy': 'same-origin'
         };
         
-        let hasPassword = !!_WEB_PW;
-        let isAuthorized = false;
-        if (hasPassword) {
-            const cookie = r.headers.get('Cookie') || "";
-            const match = cookie.match(/auth=([^;]+)/);
-            if (match && match[1] === _WEB_PW) isAuthorized = true;
-        } 
-          
-        if (!isAuthorized) {
+        // 如果没有Cookie权限，显示登录页
+        if (!hasAuthCookie) {
             return new Response(loginPage(TG_GROUP_URL, TG_CHANNEL_URL), { status: 200, headers: noCacheHeaders });
         }
 
-          await sendTgMsg(ctx, env, "✅ 后台登录成功", r, "进入管理面板", true);
+          await sendTgMsg(ctx, env, "✅ 后台登录成功", r, "进入管理面板", true); // 只要能进面板就是管理员
           ctx.waitUntil(logAccess(env, clientIP, `${city},${country}`, "登录后台"));
           
-          const tgState = !!(await getSafeEnv(env, 'TG_BOT_TOKEN', '')) && !!(await getSafeEnv(env, 'TG_CHAT_ID', ''));
-          const cfState = (!!(await getSafeEnv(env, 'CF_ID', '')) && !!(await getSafeEnv(env, 'CF_TOKEN', ''))) ||
-          (!!(await getSafeEnv(env, 'CF_EMAIL', '')) && !!(await getSafeEnv(env, 'CF_KEY', '')));
+          // 获取所有配置来源，构建系统参数对象 (用于前端区分)
+          const sysParams = {
+              tgToken: env.TG_BOT_TOKEN || TG_BOT_TOKEN,
+              tgId: env.TG_CHAT_ID || TG_CHAT_ID,
+              cfId: env.CF_ID || "",
+              cfToken: env.CF_TOKEN || "",
+              cfMail: env.CF_EMAIL || "",
+              cfKey: env.CF_KEY || ""
+          };
+
+          // 获取当前生效值 (Env > DB > KV > Hardcode)
+          const tgToken = await getSafeEnv(env, 'TG_BOT_TOKEN', TG_BOT_TOKEN);
+          const tgId = await getSafeEnv(env, 'TG_CHAT_ID', TG_CHAT_ID);
+          const cfId = await getSafeEnv(env, 'CF_ID', '');
+          const cfToken = await getSafeEnv(env, 'CF_TOKEN', '');
+          const cfMail = await getSafeEnv(env, 'CF_EMAIL', '');
+          const cfKey = await getSafeEnv(env, 'CF_KEY', '');
+
+          // 严格判断状态灯 (只有值不为空才亮绿灯)
+          const tgState = !!(tgToken && tgId);
+          const cfState = (!!(cfId && cfToken)) || (!!(cfMail && cfKey));
           
           const _ADD = await getSafeEnv(env, 'ADD', "");
           const _ADDAPI = await getSafeEnv(env, 'ADDAPI', "");
           const _ADDCSV = await getSafeEnv(env, 'ADDCSV', "");
 
-          return new Response(dashPage(url.hostname, _UUID, _PROXY_IP, _SUB_PW, _SUB_DOMAIN, _CONVERTER, env, clientIP, hasPassword, tgState, cfState, _ADD, _ADDAPI, _ADDCSV), { status: 200, headers: noCacheHeaders });
+          return new Response(dashPage(url.hostname, _UUID, _PROXY_IP, _SUB_PW, _SUB_DOMAIN, _CONVERTER, env, clientIP, hasAuthCookie, tgState, cfState, _ADD, _ADDAPI, _ADDCSV, tgToken, tgId, cfId, cfToken, cfMail, cfKey, sysParams), { status: 200, headers: noCacheHeaders });
       }
       
       // 🟣 代理逻辑 (WebSocket)
@@ -1172,40 +959,3 @@ export default {
     }
   }
 };
-
-async function getCustomIPs(env) {
-    let ips = await getSafeEnv(env, 'ADD', "");
-    const addApi = await getSafeEnv(env, 'ADDAPI', "");
-    const addCsv = await getSafeEnv(env, 'ADDCSV', "");
-    
-    // 适配多行链接
-    if (addApi) {
-        const urls = addApi.split('\n').filter(u => u.trim() !== "");
-        for (const url of urls) {
-            try { const res = await fetch(url.trim(), { headers: { 'User-Agent': 'Mozilla/5.0' } }); if (res.ok) { const text = await res.text(); ips += "\n" + text; } } catch (e) {}
-        }
-    }
-    
-    // 适配多行链接
-    if (addCsv) {
-        const urls = addCsv.split('\n').filter(u => u.trim() !== "");
-        for (const url of urls) {
-            try { const res = await fetch(url.trim(), { headers: { 'User-Agent': 'Mozilla/5.0' } }); if (res.ok) { const text = await res.text(); const lines = text.split('\n'); for (let line of lines) { const parts = line.split(','); if (parts.length >= 2) ips += `\n${parts[0].trim()}:443#${parts[1].trim()}`; } } } catch (e) {}
-        }
-    }
-    return ips;
-}
-
-function genNodes(h, u, p, ipsText, ps = "") {
-    let l = ipsText.split('\n').filter(line => line.trim() !== "");
-    const P = p ? `/proxyip=${p.trim()}` : "/";
-    const E = encodeURIComponent(P);
-    return l.map(L => {
-        const [a, n] = L.split('#'); if (!a) return "";
-        const I = a.trim(); 
-        let N = n ? n.trim() : 'Worker-Node';
-        if (ps) N = `${N} ${ps}`;
-        let i = I, pt = "443"; if (I.includes(':') && !I.includes('[')) { const s = I.split(':'); i = s[0]; pt = s[1]; }
-        return `${PT_TYPE}://${u}@${i}:${pt}?encryption=none&security=tls&sni=${h}&alpn=h3&fp=random&allowInsecure=1&type=ws&host=${h}&path=${E}#${encodeURIComponent(N)}`
-    }).join('\n');
-}
